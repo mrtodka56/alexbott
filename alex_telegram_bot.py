@@ -11,8 +11,20 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 ACCESS_KEY = "Alex wake up"
 MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
 
-# Store authenticated users (in production, use a database)
-authenticated_users = set()
+AUTH_FILE = "authenticated.json"
+
+# Load authenticated users from file
+if os.path.exists(AUTH_FILE):
+    with open(AUTH_FILE, "r") as f:
+        authenticated_users = set(json.load(f))
+else:
+    authenticated_users = set()
+
+
+def save_authenticated_users():
+    """Save authenticated users to file"""
+    with open(AUTH_FILE, "w") as f:
+        json.dump(list(authenticated_users), f)
 
 
 class AlexBot:
@@ -50,7 +62,6 @@ class AlexBot:
                         result = await response.json()
                         return result['choices'][0]['message']['content']
                     else:
-                        # Show actual error text for debugging
                         error_text = await response.text()
                         return f"⚠️ OpenRouter error {response.status}: {error_text}"
             except Exception as e:
@@ -61,14 +72,12 @@ class AlexBot:
         user_id = update.effective_user.id
 
         if user_id in authenticated_users:
-            await update.message.reply_text(
-                "Hey Cap! Alex here, ready to chat and help you out. 🚀"
-            )
+            await update.message.reply_text("Hey Cap! Alex here, ready to chat and help you out. 🚀")
         else:
             await update.message.reply_text("🔒 Access required. Please enter the access key to continue.")
 
     async def ping(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Test command to check if OpenRouter API is working"""
+        """Test OpenRouter API"""
         await update.message.reply_text("🔄 Pinging OpenRouter API...")
         response = await self.query_openrouter("Just say hello in one sentence.")
         await update.message.reply_text(response)
@@ -81,8 +90,9 @@ class AlexBot:
         if user_id not in authenticated_users:
             if message == ACCESS_KEY:
                 authenticated_users.add(user_id)
+                save_authenticated_users()
                 await update.message.reply_text(
-                    "🎉 Access granted! Hey Cap, Alex here — let’s chat. What’s on your mind?"
+                    "🎉 Access granted! Alex here — you’re now remembered forever 😉"
                 )
             else:
                 await update.message.reply_text("❌ Invalid access key. Try again.")
@@ -95,13 +105,13 @@ class AlexBot:
     def run(self):
         """Start the bot with webhook mode for Render"""
         self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CommandHandler("ping", self.ping))  # new ping command
+        self.app.add_handler(CommandHandler("ping", self.ping))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
         print("🤖 Alex is starting up with webhook...")
 
         PORT = int(os.environ.get("PORT", "10000"))
-        RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # must be set in Render
+        RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
         self.app.run_webhook(
             listen="0.0.0.0",
