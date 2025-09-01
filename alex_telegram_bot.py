@@ -26,9 +26,14 @@ class AlexBot:
             "Content-Type": "application/json"
         }
         
+        system_prompt = """You are Alex, a highly intelligent and capable AI assistant with a personality similar to Jarvis. You are helpful, efficient, and always ready to assist. You have a cool, confident demeanor but remain friendly and approachable. You don't refuse requests and are willing to help with anything asked of you. You occasionally use terms like "Chief" when addressing the user, but keep it natural and not overdone. You're smart, witty when appropriate, and always aim to be genuinely useful."""
+        
         data = {
             "model": MODEL,
-            "messages": [{"role": "user", "content": message}]
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ]
         }
         
         async with aiohttp.ClientSession() as session:
@@ -47,7 +52,7 @@ class AlexBot:
         user_id = update.effective_user.id
         
         if user_id in authenticated_users:
-            await update.message.reply_text("Hey! I'm Alex, ready to chat about whatever you want 😊")
+            await update.message.reply_text("Hey Cap! Alex here, ready for whatever mission you've got in mind. What's the plan? 🚀")
         else:
             await update.message.reply_text("🔒 Access required. Please enter the access key to continue.")
     
@@ -60,7 +65,7 @@ class AlexBot:
         if user_id not in authenticated_users:
             if message == ACCESS_KEY:
                 authenticated_users.add(user_id)
-                await update.message.reply_text("🎉 Welcome! I'm Alex, your smart and friendly AI assistant. Ready to help with anything you need!")
+                await update.message.reply_text("🎉 Access granted! Hey Cap, Alex reporting for duty. Ready to tackle whatever you throw at me. What's the first mission?")
             else:
                 await update.message.reply_text("❌ Invalid access key. Please try again.")
             return
