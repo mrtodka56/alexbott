@@ -18,11 +18,22 @@ logging.basicConfig(
 # ---------- CONFIG ----------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-ACCESS_KEY = os.getenv("ACCESS_KEY", "Alex wake up")  # optional override via env
-MODEL_DAILY = "deepseek/deepseek-chat-v3.1:free"  # daily chat (DeepSeek)
-MODEL_VENICE = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"  # AMA
+ACCESS_KEY = os.getenv("ACCESS_KEY", "Alex wake up") # optional override via env
 AUTH_FILE = "authenticated.json"
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://alexbott.onrender.com")
+
+# Models configuration
+# Venice model stays as is for /ama
+MODEL_VENICE = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+# DeepSeek is now for the /reason command
+MODEL_DEEPSEEK = "deepseek/deepseek-chat-v3.1:free"
+# Gemini models for default and /pro commands
+MODEL_GEMINI_FLASH = "gemini-2.5-flash-preview-05-20"
+MODEL_GEMINI_PRO = "gemini-2.5-pro"
+
+# Gemini API key
+GEMINI_API_KEY = "AIzaSyDmDRGK4OLmsf2ST9pkepbjHBWlGaJYfGk" # from user request
+GEMINI_API_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # ----------------------------
 
 # Load authenticated users (persist across restarts)
@@ -163,7 +174,7 @@ def safe_eval(expr: str) -> str:
         raise ValueError("Invalid math expression") from e
 
 
-# ---------- OpenRouter interaction ----------
+# ---------- Model interactions ----------
 async def openrouter_chat(messages: List[Dict], model: str) -> Tuple[int, str]:
     """
     Send a list of messages (including history) to OpenRouter and return (status_code, text_or_error).
@@ -187,6 +198,40 @@ async def openrouter_chat(messages: List[Dict], model: str) -> Tuple[int, str]:
     except Exception as e:
         return 0, f"Connection error: {str(e)}"
 
+async def gemini_chat(messages: List[Dict], model: str, use_search: bool = False) -> Tuple[int, str]:
+    """
+    Send a list of messages to Gemini and return (status_code, text_or_error).
+    """
+    url = f"{GEMINI_API_URL_BASE}/{model}:generateContent?key={GEMINI_API_KEY}"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    # Gemini API expects a different message format
+    gemini_messages = [{"role": "user", "parts": [{"text": messages[-1]['content']}]}]
+    if len(messages) > 1:
+        # Re-format history for Gemini
+        for msg in messages[1:-1]:
+            role = "user" if msg['role'] == "user" else "model"
+            gemini_messages.insert(0, {"role": role, "parts": [{"text": msg['content']}]})
+
+    payload = {
+        "contents": gemini_messages,
+        "systemInstruction": {"parts": [{"text": messages[0]['content']}]}
+    }
+
+    if use_search:
+        payload["tools"] = [{"google_search": {}}]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload, timeout=30) as resp:
+                text = await resp.text()
+                return resp.status, text
+    except Exception as e:
+        return 0, f"Connection error: {str(e)}"
+
+
 def build_context_from_search(search_results: List[Tuple[str, str]]) -> str:
     """
     Create a short context string from search results to give to model.
@@ -203,7 +248,8 @@ def build_context_from_search(search_results: List[Tuple[str, str]]) -> str:
 class AlexBot:
     def __init__(self):
         self.app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        self.active_model = MODEL_DAILY  # default model
+        # default model is now Gemini Flash
+        self.active_model = MODEL_GEMINI_FLASH
         # Store chat history per user
         self.chat_history: Dict[int, List[Dict]] = {}
         # Define a single system prompt for all models
@@ -219,25 +265,27 @@ class AlexBot:
         # Get the user's chat history, or create a new one
         history = self.chat_history.get(uid, [])
         
-        do_search = force_search or needs_search(user_text)
-        
         # Create a combined message list for the API call
         messages_to_send = [{"role": "system", "content": self.system_prompt}] + history
-        
-        if do_search:
-            snippets = await duckduckgo_search(user_text, max_results=3)
-            ctx = build_context_from_search(snippets)
-            combined_user_message = ctx + "\n\nUser asks: " + user_text if ctx else user_text
-            messages_to_send.append({"role": "user", "content": combined_user_message})
+        messages_to_send.append({"role": "user", "content": user_text})
+
+        # Check which API to use
+        if model in (MODEL_GEMINI_FLASH, MODEL_GEMINI_PRO):
+            status, text = await gemini_chat(messages_to_send, model, use_search=force_search or needs_search(user_text))
         else:
-            messages_to_send.append({"role": "user", "content": user_text})
-        
-        status, text = await openrouter_chat(messages_to_send, model)
+            # For OpenRouter models, manually add search context
+            do_search = force_search or needs_search(user_text)
+            if do_search:
+                snippets = await duckduckgo_search(user_text, max_results=3)
+                ctx = build_context_from_search(snippets)
+                combined_user_message = ctx + "\n\nUser asks: " + user_text if ctx else user_text
+                messages_to_send[-1]["content"] = combined_user_message
+            status, text = await openrouter_chat(messages_to_send, model)
 
         if status == 200:
             try:
                 j = json.loads(text)
-                ai_response = j['choices'][0]['message']['content']
+                ai_response = j['candidates'][0]['content']['parts'][0]['text'] if model in (MODEL_GEMINI_FLASH, MODEL_GEMINI_PRO) else j['choices'][0]['message']['content']
                 # Append user message and AI response to history
                 self.chat_history.setdefault(uid, []).append({"role": "user", "content": user_text})
                 self.chat_history.setdefault(uid, []).append({"role": "assistant", "content": ai_response})
@@ -245,17 +293,17 @@ class AlexBot:
                 if len(self.chat_history[uid]) > 10:
                     self.chat_history[uid] = self.chat_history[uid][-10:]
                 return ai_response
-            except Exception:
-                return "⚠️ Got invalid response from AI."
+            except Exception as e:
+                return f"⚠️ Got invalid response from AI. Error: {e}"
         elif status == 401:
             try:
                 j = json.loads(text)
                 msg = j.get("error", {}).get("message", text)
             except Exception:
                 msg = text
-            return f"⚠️ OpenRouter 401: {msg}"
+            return f"⚠️ API 401: {msg}"
         else:
-            return f"⚠️ OpenRouter error {status}: {text}"
+            return f"⚠️ API error {status}: {text}"
 
     # ---------- Handlers ----------
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -271,30 +319,41 @@ class AlexBot:
             await update.message.reply_text("🔒 Please enter the access key to continue.")
             return
         
-        sent_message = await update.message.reply_text("🔄 Pinging OpenRouter...")
-        resp = await self.query_with_optional_search(uid, "Say hi in one short sentence.", force_search=False, model=MODEL_DAILY)
+        sent_message = await update.message.reply_text("🔄 Pinging...")
+        resp = await self.query_with_optional_search(uid, "Say hi in one short sentence.", model=MODEL_GEMINI_FLASH)
         await sent_message.edit_text(resp)
 
-    async def model_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Switch model: /model daily or /model ama"""
+    async def reason_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /reason command using DeepSeek model."""
         uid = update.effective_user.id
         if uid not in authenticated_users:
             await update.message.reply_text("🔒 Please enter the access key to continue.")
             return
 
-        args = context.args
-        if not args:
-            await update.message.reply_text("Usage: /model daily|ama")
+        query = " ".join(context.args).strip()
+        if not query:
+            await update.message.reply_text("Usage: /reason your query")
             return
-        choice = args[0].lower()
-        if choice in ("daily", "deepseek"):
-            self.active_model = MODEL_DAILY
-            await update.message.reply_text("Model switched to DeepSeek (daily). 😎")
-        elif choice in ("ama", "venice", "alex"):
-            self.active_model = MODEL_VENICE
-            await update.message.reply_text("Model switched to Venice (AMA). 🔥")
-        else:
-            await update.message.reply_text("Unknown model. Use 'daily' or 'ama'.")
+            
+        sent_message = await update.message.reply_text("🤔 Deep reason mode (DeepSeek)...")
+        resp = await self.query_with_optional_search(uid, query, force_search=False, model=MODEL_DEEPSEEK)
+        await sent_message.edit_text(resp)
+    
+    async def pro_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /pro command using Gemini Pro model with search."""
+        uid = update.effective_user.id
+        if uid not in authenticated_users:
+            await update.message.reply_text("🔒 Please enter the access key to continue.")
+            return
+
+        query = " ".join(context.args).strip()
+        if not query:
+            await update.message.reply_text("Usage: /pro your query")
+            return
+            
+        sent_message = await update.message.reply_text("🔥 Pro mode (Gemini Pro)...")
+        resp = await self.query_with_optional_search(uid, query, force_search=True, model=MODEL_GEMINI_PRO)
+        await sent_message.edit_text(resp)
 
     async def search_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manual /search <query>"""
@@ -309,7 +368,8 @@ class AlexBot:
             return
             
         sent_message = await update.message.reply_text("🔎 Searching the web...")
-        resp = await self.query_with_optional_search(uid, query, force_search=True, model=MODEL_DAILY)
+        # Use the default model (now Gemini Flash) with forced search
+        resp = await self.query_with_optional_search(uid, query, force_search=True, model=self.active_model)
         await sent_message.edit_text(resp)
 
     async def translate_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,12 +392,13 @@ class AlexBot:
         messages_to_send = [{"role": "system", "content": self.system_prompt},
                             {"role": "user", "content": f"Translate the following text into {target} naturally, short and friendly (no extra commentary):\n\n{text}"}]
                             
-        status, raw = await openrouter_chat(messages_to_send, MODEL_DAILY)
+        # Use Gemini Flash for translation
+        status, raw = await gemini_chat(messages_to_send, MODEL_GEMINI_FLASH)
         
         if status == 200:
             try:
                 j = json.loads(raw)
-                translated = j['choices'][0]['message']['content']
+                translated = j['candidates'][0]['content']['parts'][0]['text']
                 await sent_message.edit_text(translated)
             except Exception:
                 await sent_message.edit_text("⚠️ Invalid response from translation API.")
@@ -388,14 +449,14 @@ class AlexBot:
             await sent_message.edit_text(resp)
             return
 
-        # Auto-detect search need; if so, perform search + DeepSeek
+        # Auto-detect search need; if so, perform search + default model
         if needs_search(text):
             sent_message = await update.message.reply_text("🔎 Lemme look that up...")
-            resp = await self.query_with_optional_search(uid, text, force_search=True, model=MODEL_DAILY)
+            resp = await self.query_with_optional_search(uid, text, force_search=True, model=self.active_model)
             await sent_message.edit_text(resp)
             return
 
-        # Otherwise regular chat via active model (usually DeepSeek daily)
+        # Otherwise regular chat via active model (now Gemini Flash)
         sent_message = await update.message.reply_text("💭 Thinking...")
         resp = await self.query_with_optional_search(uid, text, force_search=False, model=self.active_model)
         await sent_message.edit_text(resp)
@@ -404,7 +465,10 @@ class AlexBot:
         # Register handlers
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("ping", self.ping))
-        self.app.add_handler(CommandHandler("model", self.model_cmd))
+        # Register new handlers
+        self.app.add_handler(CommandHandler("reason", self.reason_cmd))
+        self.app.add_handler(CommandHandler("pro", self.pro_cmd))
+        # Keep old handlers, just updated logic
         self.app.add_handler(CommandHandler("search", self.search_cmd))
         self.app.add_handler(CommandHandler("translate", self.translate_cmd))
         self.app.add_handler(CommandHandler("calc", self.calc_cmd))
