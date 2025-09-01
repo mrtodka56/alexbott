@@ -24,10 +24,16 @@ class AlexBot:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": os.getenv("RENDER_EXTERNAL_URL", "https://alexbott.onrender.com"),
+            "X-Title": "Alex Telegram Bot"
         }
 
-        system_prompt = """You are Alex, a highly intelligent and capable AI assistant with a personality similar to Jarvis. You are helpful, efficient, and always ready to assist. You have a cool, confident demeanor but remain friendly and approachable. You don't refuse requests and are willing to help with anything asked of you. You occasionally use terms like "Chief" when addressing the user, but keep it natural and not overdone. You're smart, witty when appropriate, and always aim to be genuinely useful."""
+        system_prompt = """You are Alex, an AI assistant who talks like a smart, friendly human. 
+        You are natural, clear, and engaging—never robotic or overly formal. 
+        You can be witty when appropriate but always helpful and respectful. 
+        Think of yourself as a knowledgeable friend who happens to be powered by AI, 
+        and make conversations flow like a real person would."""
 
         data = {
             "model": MODEL,
@@ -44,7 +50,9 @@ class AlexBot:
                         result = await response.json()
                         return result['choices'][0]['message']['content']
                     else:
-                        return f"⚠️ API error: {response.status}"
+                        # Show actual error text for debugging
+                        error_text = await response.text()
+                        return f"⚠️ OpenRouter error {response.status}: {error_text}"
             except Exception as e:
                 return f"⚠️ Connection error: {str(e)}"
 
@@ -54,10 +62,16 @@ class AlexBot:
 
         if user_id in authenticated_users:
             await update.message.reply_text(
-                "Hey Cap! Alex here, ready for whatever mission you've got in mind. 🚀"
+                "Hey Cap! Alex here, ready to chat and help you out. 🚀"
             )
         else:
             await update.message.reply_text("🔒 Access required. Please enter the access key to continue.")
+
+    async def ping(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Test command to check if OpenRouter API is working"""
+        await update.message.reply_text("🔄 Pinging OpenRouter API...")
+        response = await self.query_openrouter("Just say hello in one sentence.")
+        await update.message.reply_text(response)
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all text messages"""
@@ -68,7 +82,7 @@ class AlexBot:
             if message == ACCESS_KEY:
                 authenticated_users.add(user_id)
                 await update.message.reply_text(
-                    "🎉 Access granted! Hey Cap, Alex reporting for duty. Ready to tackle the mission!"
+                    "🎉 Access granted! Hey Cap, Alex here — let’s chat. What’s on your mind?"
                 )
             else:
                 await update.message.reply_text("❌ Invalid access key. Try again.")
@@ -81,6 +95,7 @@ class AlexBot:
     def run(self):
         """Start the bot with webhook mode for Render"""
         self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("ping", self.ping))  # new ping command
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
         print("🤖 Alex is starting up with webhook...")
