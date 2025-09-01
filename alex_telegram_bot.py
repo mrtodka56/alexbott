@@ -31,8 +31,8 @@ MODEL_DEEPSEEK = "deepseek/deepseek-chat-v3.1:free"
 MODEL_GEMINI_FLASH = "gemini-2.5-flash-preview-05-20"
 MODEL_GEMINI_PRO = "gemini-2.5-pro"
 
-# Gemini API key
-GEMINI_API_KEY = "AIzaSyDmDRGK4OLmsf2ST9pkepbjHBWlGaJYfGk" # from user request
+# Gemini API key is now loaded from the environment for security
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # ----------------------------
 
